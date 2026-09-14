@@ -1,6 +1,6 @@
 # Volvo Penta MDI → ESP32 → Signal K
 
-Firmware experimental para escuchar el CAN/J1939 de un Volvo Penta D1/D2 con MDI de 2007, enviar telemetría a Signal K e investigar las indicaciones propietarias del cuadro. Incluye diagnóstico web, captura persistente de cambios, marcas humanas sincronizadas y actualización por WiFi.
+Firmware experimental pensado para un **Sailor Hat with ESP32 (SH-ESP32) de Hat Labs**, para escuchar el CAN/J1939 de un Volvo Penta D1/D2 con MDI de 2007, enviar telemetría a Signal K e investigar las indicaciones propietarias del cuadro. Incluye diagnóstico web, captura persistente de cambios, marcas humanas sincronizadas y actualización por WiFi.
 
 **No es un diagnóstico Volvo oficial ni un sustituto del cuadro, las alarmas o los procedimientos del fabricante.** El significado de varios bits sigue sin confirmar. CAN se configura en modo **solo escucha**; el proyecto no acciona arranque, parada ni calentadores. No debe utilizarse como única protección del motor.
 
@@ -44,7 +44,11 @@ Las alarmas para el consumidor Android se publican como booleanos en rutas como 
 
 ## Hardware y puesta en marcha
 
-Configuración incluida: ESP32 clásico (`esp32dev`), CAN TX GPIO32 / RX GPIO34, OneWire GPIO4, I²C SDA16 / SCL17, OLED SSD1306 opcional 128×64 en `0x3c`. Adaptar al hardware real. Es necesario un transceptor CAN adecuado: **no conectar CAN-H/CAN-L directamente al ESP32**. Revisar alimentación, masas y terminación del bus antes de conectar; no añadir terminación sin comprobar la existente.
+La placa objetivo de este proyecto es el **Sailor Hat with ESP32 (SH-ESP32), de Hat Labs**. No se presenta como un firmware listo para cualquier placa ESP32. La selección `board = esp32dev` en PlatformIO es el perfil de compilación utilizado, no una indicación de que el montaje esté pensado para una placa de desarrollo genérica.
+
+La configuración de esta instalación utiliza CAN TX GPIO32 / RX GPIO34, OneWire GPIO4, I²C SDA16 / SCL17 y OLED SSD1306 opcional 128×64 en `0x3c`. Comprobar la revisión de SH-ESP32 y el cableado de los periféricos antes de reproducir el montaje. Para adaptarlo a otra placa hay que revisar pines, interfaz CAN, alimentación y distribución de flash; no se garantiza compatibilidad directa.
+
+Es necesario un transceptor CAN adecuado: **no conectar CAN-H/CAN-L directamente a los GPIO del ESP32**. Revisar alimentación, masas y terminación del bus antes de conectar; no añadir terminación sin comprobar la existente.
 
 Se utiliza PlatformIO, plataforma `espressif32@6.5.0`, Arduino y SensESP `3.5.0`. Las dependencias están en `platformio.ini`. El script previo a compilación parchea la persistencia de esa versión concreta de SensESP: escritura temporal, comprobación y sustitución con respaldo; también comprueba recepción completa del cuerpo HTTP y errores al guardar. No se debe actualizar SensESP sin revisar este parche.
 
