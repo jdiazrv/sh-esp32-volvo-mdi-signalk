@@ -60,11 +60,15 @@ En el experimento humano se dio ON, se esperaron dos pitidos y se pulsó/sueltó
 4. **STOP:** comparar ON→STOP sin arrancar, pulsación de STOP con motor funcionando y parada mecánica, documentando el solenoide averiado. No llamar STOP a cualquier estado de motor parado.
 5. **Silenciar alarma:** comparar la misma secuencia sin pulsar y pulsando dos veces separadas 5 s. Un cambio C1 `BC20→9C20` cerca del fin de sonido puede ser reconocimiento/silencio, pero aún no está demostrado.
 
+6. **Aceite al arranque:** marcar la luz física como encendida, apagada, parpadeando o no clara, además de ON, START, fin del arranque y motor funcionando. El registro conserva simultáneamente los bytes crudos de 65417 y las muestras de RPM, temperatura y alimentación alrededor de la maniobra. Una marca visual no demuestra presión: puede ser una prueba de lámparas o una condición de inhibición.
+
 No provocar averías para confirmar hipótesis. Un profesional puede plantear pruebas de sensores siguiendo el procedimiento del fabricante si fueran necesarias.
 
 ## Lo que no sabemos
 
 Mapa propietario completo, exclusividad de C1/0x20, bits de aceite y temperatura, estado real de calentadores, semántica completa de B2/B4/90/91/05/20, otros PGN propietarios y diferencias entre generaciones. Tampoco se ha encontrado en lo revisado un decodificador público que cierre estas incógnitas. Compartir J1939 con camiones Volvo no demuestra que compartan estos campos propietarios.
+
+La búsqueda adicional revisó el manual del YDEG-04 y proyectos abiertos de interfaces Volvo Penta. El manual confirma que el aceite puede proceder del mensaje propietario 65417 y que algunos bits descritos por el gateway son salidas NMEA 2000, no necesariamente bits originales del MDI. El proyecto abierto `buhhe/VolvoPenta-N2K_Interface` convierte PGN estándar y deja los estados de aceite del mensaje NMEA en cero; no decodifica FF89/C1 ni aporta una máscara validada de aceite. Esto acota la búsqueda, pero no prueba que no exista software privado o documentación no publicada.
 
 ## Fuentes y comparación
 

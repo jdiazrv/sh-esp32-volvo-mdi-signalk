@@ -20,7 +20,7 @@ Los índices de byte de este repositorio son **base cero**, salvo indicación ex
 2. Decodifica PGN estándar, convierte a unidades Signal K y publica por WiFi. RPM se publica aproximadamente cada 500 ms; telemetría lenta, cada 2 s.
 3. Examina mensajes propietarios sin pretender disponer del mapa completo Volvo. En modo real, publica experimentalmente la asociación C1/baja tensión.
 4. Interpreta DM1, incluido transporte multipaquete, si aparece. En nuestras capturas no se ha observado DM1.
-5. Guarda automáticamente cambios CAN en SPIFFS, con rotación de dos archivos. Ofrece además un anillo manual en RAM y un registro persistente de observaciones.
+5. Guarda automáticamente cambios CAN en SPIFFS, con rotación de dos archivos. Verifica cada escritura cerrando y reabriendo el archivo, conserva transiciones rápidas y muestra el motivo de una pausa. Ofrece además un anillo manual en RAM y un registro persistente de observaciones.
 6. Presenta diagnóstico e investigación en HTTP `:8080`; mantiene la configuración de SensESP en el puerto 80.
 7. Permite subir manualmente un `firmware.bin` por la web o usar OTA desde PlatformIO. No descarga versiones automáticamente.
 8. Incluye soporte para sondas Dallas/OneWire y pantalla OLED opcional.

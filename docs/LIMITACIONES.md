@@ -13,11 +13,11 @@ Esta publicación documenta el código existente; no convierte sus supuestos en 
 
 ## Registro y sincronización
 
-- El filtro de repetición de cambios puede suprimir transiciones dentro de un segundo. Como se actualiza el estado previo antes del filtro, una inversión rápida puede perderse definitivamente del CSV. Pendiente: conservar todas las transiciones relevantes, con colas y contadores de pérdidas explícitos.
+- Las versiones anteriores filtraban transiciones dentro de un segundo y podían perder una inversión rápida. La corrección elimina ese filtro para cambios relevantes y conserva A→B→A. El contador de cola y los errores de escritura siguen siendo visibles; si una escritura parcial o ambigua ocurre, la captura se pausa hasta vaciar/rotar el archivo para no encadenar CSV corrupto.
 - Se excluyen ciertos cambios, se rotan archivos y hay límites de RAM/flash; no es una traza completa del bus. No medir temporizaciones exactas sin considerar este muestreo.
 - La interfaz de captura contiene texto histórico que dice que temperatura se excluye: el código publicado incluye la excepción de línea base/cruces de 50 °C. Pendiente: uniformar el texto visible.
 - Respuesta HTTP a una marca y persistencia física no son lo mismo. Pendiente: indicar «en cola» y confirmar escritura, sin penalizar el registro del instante del toque.
-- Faltan observaciones directas específicas para luces y parada mecánica en investigación. Pendiente: incorporarlas sin volver a saturar la pantalla con preguntas.
+- La página incorpora observaciones directas de luz de aceite/carga y parada mecánica. Aún falta ejecutar una secuencia limpia y confirmar que la muestra contiene el instante de la transición; una observación sigue sin probar una máscara CAN.
 
 ## Operación y seguridad
 

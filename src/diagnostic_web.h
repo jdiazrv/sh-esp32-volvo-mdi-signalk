@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Arduino.h>
+#include <atomic>
 #include <WiFi.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
@@ -14,6 +15,9 @@ struct DiagnosticRuntimeState {
   bool mapping_verified = false;
   bool dm1_available = false;
   bool alarm_data_fresh = false;
+  bool oil_alarm_valid = false;
+  bool temperature_alarm_valid = false;
+  bool voltage_alarm_valid = false;
   bool over_temperature = false;
   bool low_oil = false;
   bool low_voltage = false;
@@ -115,6 +119,8 @@ class DiagnosticWeb {
     uint8_t raw_changed_mask = 0;
     uint8_t trigger_mask = 0;
     bool baseline = false;
+    bool context = false;
+    uint16_t session = 0;
     uint8_t data[8] = {};
     uint8_t xor_data[8] = {};
   };
@@ -130,9 +136,8 @@ class DiagnosticWeb {
     uint8_t subtype = 0;
     uint8_t len = 0;
     uint8_t data[8] = {};
-    // Last time this key actually produced a flash row, and which bytes
-    // triggered it. Bounds the write rate of a repeating pattern (an
-    // unidentified counter) without ever delaying a byte that is newly moving.
+    // Last accepted row: used only for telemetry sampling, never to suppress
+    // a second bit transition. ABA changes must both survive.
     uint32_t last_row_ms = 0;
     uint8_t last_trigger_mask = 0;
   };
@@ -176,10 +181,10 @@ class DiagnosticWeb {
   void send_forbidden(WiFiClient& client);
   void send_method_not_allowed(WiFiClient& client);
   void send_not_found(WiFiClient& client);
-  void set_capture(bool enabled, bool clear);
+  bool set_capture(bool enabled, bool clear);
   bool set_marker(uint8_t marker_id, bool active);
   void append_capture_row_locked(const CaptureRow& row);
-  void track_persistent_change(uint32_t can_id, uint32_t pgn, uint8_t source,
+  bool track_persistent_change(uint32_t can_id, uint32_t pgn, uint8_t source,
                                const uint8_t* data, uint8_t len,
                                uint32_t now);
   void begin_persistent_capture();
@@ -208,6 +213,12 @@ class DiagnosticWeb {
   // through set_runtime_state(). A single byte, so it is read without the
   // mutex from the J1939 decode path.
   volatile uint8_t persistent_engine_source_ = 0xff;
+  std::atomic<uint32_t> baseline_epoch_{0};
+  uint32_t applied_baseline_epoch_ = 0;
+  std::atomic<uint16_t> recording_session_{0};
+  uint32_t last_engine_frame_ms_ = 0;
+  uint32_t context_started_ms_ = 0;
+  bool context_active_ = false;
 
   WiFiServer* server_ = nullptr;
   TaskHandle_t task_ = nullptr;
@@ -235,6 +246,18 @@ class DiagnosticWeb {
   // WiFi/Signal K configuration must always keep room to be rewritten, so the
   // capture yields the remaining space instead of consuming it.
   bool persistent_full_ = false;
+  bool persistent_write_error_ = false;
+  const char* persistent_error_reason_ = "";
+  uint32_t persistent_write_errors_ = 0;
+  uint32_t persistent_verify_errors_ = 0;
+  bool session_write_error_ = false;
+  bool session_full_ = false;
+  size_t session_bytes_ = 0;
+  uint32_t session_rows_ = 0;
+  uint32_t session_dropped_ = 0;
+  uint32_t capture_overwritten_ = 0;
+  bool research_write_error_ = false;
+  uint32_t research_dropped_ = 0;
   uint32_t research_next_hypothesis_id_ = 0;
   uint32_t research_hypothesis_id_ = 0;
   uint32_t research_hypothesis_ms_ = 0;

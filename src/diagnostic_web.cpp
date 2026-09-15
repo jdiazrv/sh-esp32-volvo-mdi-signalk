@@ -1,4 +1,6 @@
 #include "diagnostic_web.h"
+#include "capture_file_writer.h"
+#include "capture_policy.h"
 
 #include <ArduinoJson.h>
 #include <SPIFFS.h>
@@ -17,6 +19,9 @@ namespace {
 constexpr char kPersistentCapturePath[] = "/auto_capture_bits.csv";
 constexpr char kPreviousCapturePath[] = "/auto_capture_bits.previous.csv";
 constexpr char kResearchCapturePath[] = "/research_events.csv";
+constexpr char kSessionCapturePath[] = "/capture_sessions.csv";
+constexpr size_t kSessionCaptureMaxBytes = 96U * 1024U;
+constexpr uint32_t kContextDurationMs = 90000;
 // Keep two bounded generations while reserving ample room for SPIFFS garbage
 // collection and SensESP configuration files. The previous 384 KiB limit left
 // only one physically free block after sustained capture, which could make a
@@ -30,12 +35,9 @@ constexpr size_t kPersistentCaptureMaxBytes = 128U * 1024U;
 // Never let the capture take the last of the filesystem: the SensESP WiFi and
 // Signal K configuration files must always be rewritable.
 constexpr size_t kPersistentReservedBytes = 64U * 1024U;
-// Hard ceiling on how often one PGN/source/subtype may write a row. Counter
-// bytes we have not identified yet cannot turn into a flash write storm.
-constexpr uint32_t kPersistentMinRowIntervalMs = 1000;
 constexpr char kPersistentCaptureHeader[] =
     "boot_id,utc,epoch_ms,uptime_ms,event,can_id_hex,pgn,pgn_hex,source_hex,"
-    "length,raw_changed_mask,trigger_mask,xor_hex,data_hex\r\n";
+    "length,raw_changed_mask,trigger_mask,context,session,xor_hex,data_hex\r\n";
 constexpr char kResearchCaptureHeader[] =
     "boot_id,utc,epoch_ms,uptime_ms,event,hypothesis_id,code,label,"
     "confidence,response,pgn,data_hex\r\n";
@@ -59,13 +61,13 @@ window.uploadFirmware=async()=>{let f=firmwareFile.files[0],p=firmwarePassword.v
 const char kResearchPage[] PROGMEM = R"HTML(<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Volvo MDI · Investigación</title><style>
 :root{color-scheme:dark;--bg:#081116;--card:#102129;--line:#24404c;--ink:#e8f5f7;--muted:#8ba8b1;--cyan:#4ed7dc;--green:#61dc94;--red:#ff6b72;--amber:#ffc857}*{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at 80% 0,#12313b 0,#081116 42%);color:var(--ink);font:15px system-ui,sans-serif}main{max-width:900px;margin:auto;padding:18px}.top,.toolbar{display:flex;gap:10px;align-items:center;justify-content:space-between;flex-wrap:wrap}.brand{font-size:22px;font-weight:750}.muted{color:var(--muted)}.card{background:#102129e8;border:1px solid var(--line);border-radius:14px;padding:16px;margin-top:14px;box-shadow:0 8px 24px #0004}h2{font-size:16px;margin:0 0 12px}.guess{font-size:20px;font-weight:700;color:var(--amber);margin:8px 0}.evidence{font-family:ui-monospace,monospace;color:#bcecef;word-break:break-word}button,a.btn{appearance:none;border:1px solid #37606f;background:#16313c;color:var(--ink);border-radius:9px;padding:11px 14px;text-decoration:none;cursor:pointer;touch-action:manipulation;-webkit-user-select:none;user-select:none}button.yes{background:#17613c;border-color:var(--green)}button.no{background:#67262d;border-color:var(--red)}button:disabled{opacity:.4;cursor:not-allowed}.marks{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px}.marks button{min-height:58px;font-size:16px;font-weight:700}.marks button.marking{background:#17613c;border-color:var(--green)}.status{border-radius:10px;padding:10px;background:#0b1a20;color:var(--muted)}.manual-log{margin-top:10px;line-height:1.7}details.card>summary{cursor:pointer;font-weight:700;color:var(--muted);touch-action:manipulation}details[open]>summary{color:var(--ink);margin-bottom:12px}.foot{margin-top:12px;color:var(--muted);font-size:12px}@media(max-width:560px){main{padding:12px}.marks{grid-template-columns:1fr 1fr}.marks button{font-size:14px;min-height:62px}.guess{font-size:18px}}
 </style></head><body><main><div class="top"><div><div class="brand">VOLVO MDI · INVESTIGACIÓN</div><div class="muted">Registro manual preciso · CAN siempre en solo escucha</div></div><a class="btn" href="/">Volver a diagnóstico</a></div>
-<section class="card"><h2>Registrar lo que ocurre</h2><div class="marks" id="marks"></div><div id="save" class="foot">Sincronizando el reloj del teléfono con el ESP32…</div><div id="manualLog" class="manual-log muted">Todavía no has marcado ningún acontecimiento.</div><div class="foot">Durante la maniobra usa solamente estos botones. Cada toque es un hecho observado y no necesita confirmación posterior.</div></section>
+      <section class="card"><h2>Registrar lo que ocurre</h2><div class="marks" id="marks"></div><div id="save" class="foot">Sincronizando el reloj del teléfono con el ESP32…</div><div id="manualLog" class="manual-log muted">Todavía no has marcado ningún acontecimiento.</div><div class="foot">Durante la maniobra usa solamente estos botones. Cada toque es un hecho observado y no necesita confirmación posterior. La luz de aceite se registra como observación visual; no prueba la presión ni identifica un bit CAN.</div></section>
 <section class="card"><h2>Última detección automática, sólo informativa</h2><div id="guess" class="guess">Esperando una transición…</div><div id="detail" class="status">Las detecciones automáticas se guardan solas. No tienes que confirmarlas mientras manejas el motor.</div></section>
 <details class="card"><summary>Revisar hipótesis automáticas después de la prueba</summary><div id="eventHistory" class="muted">Todavía no hay eventos.</div><div class="foot">Esta revisión es opcional. Cada tarjeta pregunta por un evento concreto e indica su tiempo; no la uses durante START o STOP.</div></details>
 <section class="card"><h2>Datos de investigación</h2><div class="toolbar" style="justify-content:flex-start"><a class="btn" href="/research.csv">Descargar confirmaciones CSV</a><a class="btn" href="/auto-capture.csv">Descargar tramas CSV</a><a class="btn" href="/auto-capture-previous.csv">Descargar tramas anteriores</a></div><div id="stats" class="foot">…</div></section>
 <script>
 let csrf='',clockOffset=0,bestRtt=1e9,clockReady=false,manualEvents=[];
-const observations=[[8,'ON · alimento el MDI'],[1,'Inicio de precalentamiento'],[2,'Fin de precalentamiento'],[3,'Inicio de pitidos'],[4,'Fin de pitidos'],[5,'Pulso START'],[6,'Fin del motor de arranque'],[9,'Motor funcionando'],[7,'Pulso STOP'],[10,'Motor detenido']];
+const observations=[[8,'ON · alimento el MDI'],[1,'Inicio de precalentamiento'],[2,'Fin de precalentamiento'],[3,'Inicio de pitidos'],[4,'Fin de pitidos'],[5,'Pulso START'],[6,'Fin del motor de arranque'],[9,'Motor funcionando'],[7,'Pulso STOP eléctrico'],[10,'Motor detenido'],[12,'Luz de aceite encendida'],[13,'Luz de aceite apagada'],[14,'Luz de aceite parpadeando'],[15,'Luz de aceite no clara'],[16,'Parada mecánica'],[17,'Luz de carga encendida'],[18,'Luz de carga apagada']];
 marks.innerHTML=observations.map(x=>`<button disabled data-code="${x[0]}" onpointerdown="mark(${x[0]},this,event)" onkeydown="keyMark(${x[0]},this,event)">${x[1]}</button>`).join('');
 function render(j){guess.textContent=j.label||'Esperando una transición…';detail.innerHTML=j.id?`Evento automático a t=${(j.uptimeMs/1000).toFixed(3)} s · PGN ${j.pgn||'—'} · confianza provisional ${j.confidence}%<br><span class=evidence>${j.data||''}</span>`:'Las detecciones automáticas se guardan solas. No tienes que confirmarlas mientras manejas el motor.';eventHistory.innerHTML=(j.events||[]).map(e=>`<div class=status style="margin-top:8px"><b>¿Ocurrió realmente: ${e.label}?</b><br>Detección a t=${(e.uptimeMs/1000).toFixed(3)} s · confianza ${e.confidence}% · <span class=evidence>${e.data}</span><br>${e.pending?`<button class=yes onclick="answerFor('yes',${e.id})">Sí, ocurrió</button> <button class=no onclick="answerFor('no',${e.id})">No ocurrió</button>`:e.response}</div>`).join('')||'Todavía no hay eventos.';stats.textContent=(j.rows||0)+' eventos/confirmaciones guardados · '+Math.round((j.bytes||0)/1024)+' KiB'}
 async function refresh(){try{let t0=performance.now(),r=await fetch('/api/research',{cache:'no-store'}),j=await r.json(),t1=performance.now(),rtt=t1-t0;if(Number.isFinite(j.serverUptimeMs)&&rtt<bestRtt){bestRtt=rtt;clockOffset=j.serverUptimeMs-(t0+t1)/2;clockReady=true;document.querySelectorAll('#marks button').forEach(b=>b.disabled=false);save.textContent='Reloj sincronizado · precisión de red estimada ±'+Math.ceil(rtt/2)+' ms'}render(j)}catch(e){guess.textContent='Sin respuesta del ESP32';detail.textContent=e.message}}
@@ -94,13 +96,15 @@ const char* pgn_name(uint32_t pgn) {
 }
 
 constexpr uint8_t kMarkerCount = 7;
-constexpr uint8_t kResearchCodeCount = 11;
+constexpr uint8_t kResearchCodeCount = 18;
 
 const char* research_code_name(uint8_t code) {
   static const char* const names[kResearchCodeCount + 1] = {
       "unknown", "preheat_start", "preheat_end", "beep_start", "beep_end",
       "crank_start", "crank_end", "manual_stop", "mdi_power_on",
-      "engine_running", "engine_stopped", "low_voltage_alarm"};
+      "engine_running", "engine_stopped", "low_voltage_alarm",
+      "oil_lamp_on", "oil_lamp_off", "oil_lamp_flashing", "oil_lamp_unknown",
+      "mechanical_stop", "charge_lamp_on", "charge_lamp_off"};
   return code <= kResearchCodeCount ? names[code] : names[0];
 }
 
@@ -117,13 +121,21 @@ const char* research_label(uint8_t code) {
       "Encendido manual del MDI",
       "Motor funcionando confirmado manualmente",
       "Motor detenido confirmado manualmente",
-      "Alarma MDI de baja tensión/carga activa"};
+      "Posible alarma MDI de baja tensión/carga",
+      "Luz de aceite observada encendida (no mide presión)",
+      "Luz de aceite observada apagada",
+      "Luz de aceite observada parpadeando",
+      "Luz de aceite no observada o dudosa",
+      "Accionada parada mecánica",
+      "Luz de carga observada encendida",
+      "Luz de carga observada apagada"};
   return code <= kResearchCodeCount ? labels[code] : labels[0];
 }
 
 uint8_t research_confidence(uint8_t code) {
   static const uint8_t values[kResearchCodeCount + 1] =
-      {0, 100, 60, 70, 65, 90, 80, 80, 100, 100, 100, 99};
+      {0, 100, 60, 70, 65, 90, 80, 80, 100, 100, 100, 80,
+       100, 100, 100, 0, 100, 100, 100};
   return code <= kResearchCodeCount ? values[code] : 0;
 }
 
@@ -301,7 +313,7 @@ void DiagnosticWeb::note_j1939_frame(uint32_t can_id, uint32_t pgn,
   const uint32_t now = millis();
   // Persistent tracking is independent of the web snapshot mutex. A browser
   // refresh must never hide a short-lived transition during cranking/stopping.
-  track_persistent_change(can_id, pgn, source, data, len, now);
+  const bool relevant = track_persistent_change(can_id, pgn, source, data, len, now);
   detect_research_hypothesis(pgn, source, data, len, now);
   // Diagnostics must never delay the engine path. If the web task is copying a
   // snapshot, omit this diagnostic sample; J1939 decoding still proceeds.
@@ -321,15 +333,12 @@ void DiagnosticWeb::note_j1939_frame(uint32_t can_id, uint32_t pgn,
     slot->source = source;
     slot->first_ms = now;
   }
-  const bool changed = slot->len != len || memcmp(slot->captured_data, data, len) != 0;
   slot->can_id = can_id;
   slot->len = len;
   memcpy(slot->data, data, len);
   slot->last_ms = now;
   slot->count++;
-  if (capture_enabled_ &&
-      (changed || slot->last_capture_ms == 0 ||
-       now - slot->last_capture_ms >= 1000)) {
+  if (capture_enabled_ && relevant) {
     CaptureRow row;
     row.timestamp_ms = now;
     row.relative_ms = now - capture_started_ms_;
@@ -346,25 +355,33 @@ void DiagnosticWeb::note_j1939_frame(uint32_t can_id, uint32_t pgn,
   xSemaphoreGive(mutex_);
 }
 
-void DiagnosticWeb::track_persistent_change(uint32_t can_id, uint32_t pgn,
+bool DiagnosticWeb::track_persistent_change(uint32_t can_id, uint32_t pgn,
                                              uint8_t source,
                                              const uint8_t* data, uint8_t len,
                                              uint32_t now) {
-  if (persistent_queue_ == nullptr) return;
+  if (persistent_queue_ == nullptr) return false;
+  const uint32_t epoch = baseline_epoch_.load();
+  if (epoch != applied_baseline_epoch_) {
+    for (auto& entry : persistent_slots_) entry = PersistentSlot{};
+    applied_baseline_epoch_ = epoch;
+    context_started_ms_ = now;
+    context_active_ = true;
+  }
   // These Volvo proprietary messages are multiplexed. Byte 0 identifies the
   // submessage and byte 1 is a rolling counter. Compare each subtype with its
   // own previous value and do not let the counter alone trigger flash writes.
   const bool multiplexed_volvo_pgn = pgn == 65417 || pgn == 65420;
   const uint8_t subtype = multiplexed_volvo_pgn && len > 0 ? data[0] : 0;
-  // Once the engine address is known, the proprietary records broadcast by
-  // other nodes carry nothing the decoder will ever act on. The tachometer at
-  // SA 0xF2 sends PGN 65417 with every byte constant except two free-running
-  // counters, and on real traffic it accounted for 87 % of the rows that
-  // survived every other filter. Keep it visible in the live frame table and
-  // in the manual capture, but stop writing its heartbeat to flash.
   const uint8_t engine_source = persistent_engine_source_;
-  const bool foreign_proprietary_record =
-      multiplexed_volvo_pgn && engine_source != 0xff && source != engine_source;
+  const bool engine_frame = source == (engine_source == 0xff ? 0x00 : engine_source);
+  if (engine_frame) {
+    if (last_engine_frame_ms_ == 0 || now - last_engine_frame_ms_ > 5000) {
+      for (auto& entry : persistent_slots_) entry = PersistentSlot{};
+      context_started_ms_ = now;
+      context_active_ = true;
+    }
+    last_engine_frame_ms_ = now;
+  }
   PersistentSlot* slot = nullptr;
   PersistentSlot* oldest = &persistent_slots_[0];
   for (auto& candidate : persistent_slots_) {
@@ -396,27 +413,19 @@ void DiagnosticWeb::track_persistent_change(uint32_t can_id, uint32_t pgn,
     }
   }
 
-  uint8_t trigger_mask = raw_changed_mask;
-  // SPN 190 occupies bytes 3-4 (zero based) in EEC1. Preserve the complete
-  // EEC1 frame if another byte changes, but RPM alone does not create a row.
-  if (pgn == 61444) trigger_mask &= uint8_t(~((1U << 3) | (1U << 4)));
-  // Temperature changes must not fill SPIFFS, but the 50 C boundary controls
-  // whether the first START/PREHEAT press energizes the glow plugs. Preserve
-  // the first ET1 sample and each crossing as experiment context. SPN 110 raw
-  // 0x5A is exactly 50 C (raw - 40).
-  if (pgn == 65262) {
-    bool crossed_preheat_boundary = false;
-    if (!baseline && len > 0 && slot->len > 0 && data[0] < 0xFB &&
-        slot->data[0] < 0xFB) {
-      crossed_preheat_boundary =
-          (data[0] < 0x5A) != (slot->data[0] < 0x5A);
-    }
-    trigger_mask = baseline ? raw_changed_mask
-                            : (crossed_preheat_boundary ? uint8_t(1U) : 0U);
+  const auto decision = capture_policy::decide(
+      pgn, source, data, len, slot->data, slot->len, baseline, raw_changed_mask);
+  if (engine_frame && pgn == 61444 && decision.telemetry_transition) {
+    context_started_ms_ = now;
+    context_active_ = true;
   }
-  if (multiplexed_volvo_pgn) trigger_mask &= uint8_t(~(1U << 1));
-  // A baseline is still recorded, so the CSV always shows the record existed.
-  if (foreign_proprietary_record && !baseline) trigger_mask = 0;
+  if (context_active_ && now - context_started_ms_ >= kContextDurationMs)
+    context_active_ = false;
+  const uint16_t session = recording_session_.load();
+  const bool telemetry = pgn == 61444 || pgn == 65262 || pgn == 65271;
+  const bool sample = engine_frame && telemetry && (context_active_ || session != 0) &&
+      (baseline || now - slot->last_row_ms >= (pgn == 61444 ? 250U : 1000U));
+  const uint8_t trigger_mask = decision.mask;
 
   slot->used = true;
   slot->pgn = pgn;
@@ -425,22 +434,7 @@ void DiagnosticWeb::track_persistent_change(uint32_t can_id, uint32_t pgn,
   slot->len = len;
   slot->last_ms = now;
   memcpy(slot->data, data, len);
-  if (trigger_mask == 0) return;
-  // Rate limit only a repetition of the exact same trigger pattern. Observed
-  // traffic has the tachometer at SA 0xF2 sending PGN 65417 with two
-  // free-running counters and every other byte constant; after masking the
-  // byte-1 counter it still produced 92 % of all rows, always through byte 3
-  // alone. Any byte that was not part of the previous trigger is new
-  // information and is written immediately, so an alarm transition is never
-  // lost behind a counter tick.
-  const bool same_pattern_as_before =
-      !baseline && slot->last_row_ms != 0 && trigger_mask == slot->last_trigger_mask;
-  if (same_pattern_as_before &&
-      now - slot->last_row_ms < kPersistentMinRowIntervalMs) {
-    return;
-  }
-  slot->last_row_ms = now;
-  slot->last_trigger_mask = trigger_mask;
+  if (!decision.record && !sample) return false;
 
   PersistentRow row;
   row.uptime_ms = now;
@@ -451,9 +445,20 @@ void DiagnosticWeb::track_persistent_change(uint32_t can_id, uint32_t pgn,
   row.raw_changed_mask = raw_changed_mask;
   row.trigger_mask = trigger_mask;
   row.baseline = baseline;
+  row.context = !decision.record && sample;
+  row.session = session;
   memcpy(row.data, data, len);
   memcpy(row.xor_data, xor_data, len);
-  if (xQueueSend(persistent_queue_, &row, 0) != pdTRUE) persistent_dropped_++;
+  if (xQueueSend(persistent_queue_, &row, 0) != pdTRUE) {
+    persistent_dropped_++;
+    // Recover a complete baseline after a queue overflow; do not pretend the
+    // missing transition is present. The lost-row count remains visible.
+    slot->used = false;
+  } else {
+    slot->last_row_ms = now;
+    slot->last_trigger_mask = trigger_mask;
+  }
+  return true;
 }
 
 void DiagnosticWeb::detect_research_hypothesis(uint32_t pgn, uint8_t source,
@@ -735,8 +740,8 @@ void DiagnosticWeb::serve_client(WiFiClient& client) {
     } else if (!authorized_mutation) {
       send_forbidden(client);
     } else if (path == "/api/capture/start") {
-      set_capture(true, false);
-      send_json_ok(client);
+      const bool started = set_capture(true, false);
+      send_json_result(client, started, started ? nullptr : "no se pudo iniciar");
     } else if (path == "/api/capture/stop") {
       set_capture(false, false);
       send_json_ok(client);
@@ -929,6 +934,9 @@ void DiagnosticWeb::send_status(WiFiClient& client) {
   d["autoCapture"]["bytes"] = persistent_bytes_;
   d["autoCapture"]["dropped"] = persistent_dropped_;
   d["autoCapture"]["full"] = persistent_full_;
+  d["autoCapture"]["writeError"] = persistent_write_error_;
+  d["autoCapture"]["writeErrorReason"] = persistent_error_reason_;
+  d["autoCapture"]["writeErrors"] = persistent_write_errors_;
   {
     const size_t total = SPIFFS.totalBytes();
     const size_t used = SPIFFS.usedBytes();
@@ -1155,7 +1163,7 @@ void DiagnosticWeb::begin_persistent_capture() {
     gmtime_r(&tv.tv_sec, &when);
     strftime(utc, sizeof(utc), "%Y-%m-%dT%H:%M:%SZ", &when);
   }
-  file.printf("%08lX,%s,%lld,%lu,boot,,,,,0,0x00,0x00,,\r\n",
+  file.printf("%08lX,%s,%lld,%lu,boot,,,,,0,0x00,0x00,0,0,,\r\n",
               (unsigned long)persistent_boot_id_, utc,
               tv.tv_sec >= 1609459200
                   ? (static_cast<long long>(tv.tv_sec) * 1000LL +
@@ -1209,7 +1217,7 @@ bool DiagnosticWeb::clear_persistent_capture() {
     strftime(utc, sizeof(utc), "%Y-%m-%dT%H:%M:%SZ", &when);
     epoch_ms = static_cast<long long>(tv.tv_sec) * 1000LL + tv.tv_usec / 1000;
   }
-  file.printf("%08lX,%s,%lld,%lu,clear,,,,,0,0x00,0x00,,\r\n",
+  file.printf("%08lX,%s,%lld,%lu,clear,,,,,0,0x00,0x00,0,0,,\r\n",
               (unsigned long)persistent_boot_id_, utc, epoch_ms,
               (unsigned long)millis());
   file.flush();
@@ -1218,6 +1226,9 @@ bool DiagnosticWeb::clear_persistent_capture() {
   persistent_rows_ = 0;
   persistent_dropped_ = 0;
   persistent_full_ = false;
+  persistent_write_error_ = false;
+  persistent_error_reason_ = "";
+  persistent_write_errors_ = 0;
   Serial.println("Automatic capture files cleared; configuration preserved");
   return true;
 }
@@ -1227,6 +1238,7 @@ bool DiagnosticWeb::clear_persistent_capture() {
 // threshold. Rotation then never ran and the filesystem stayed full forever,
 // which is what stopped the SensESP WiFi configuration from being saved.
 bool DiagnosticWeb::persistent_space_available() {
+  if (persistent_write_error_) return false;
   const size_t total = SPIFFS.totalBytes();
   const size_t used = SPIFFS.usedBytes();
   const size_t free_bytes = total > used ? total - used : 0;
@@ -1253,13 +1265,6 @@ void DiagnosticWeb::append_persistent_row(const PersistentRow& row) {
     persistent_dropped_++;
     return;
   }
-  File file = SPIFFS.open(kPersistentCapturePath, FILE_APPEND);
-  if (!file) {
-    persistent_dropped_++;
-    return;
-  }
-  const size_t size_before = file.size();
-
   struct timeval tv = {};
   gettimeofday(&tv, nullptr);
   char utc[24] = {};
@@ -1272,28 +1277,36 @@ void DiagnosticWeb::append_persistent_row(const PersistentRow& row) {
   }
   String bytes = hex_bytes(row.data, row.len);
   String xor_bytes = hex_bytes(row.xor_data, row.len);
-  const size_t written = file.printf(
+  String line;
+  line.reserve(240);
+  line.printf(
       "%08lX,%s,%lld,%lu,%s,0x%08lX,%lu,0x%05lX,0x%02X,%u,0x%02X,0x%02X,"
-      "\"%s\",\"%s\"\r\n",
+      "%u,%u,\"%s\",\"%s\"\r\n",
       (unsigned long)persistent_boot_id_, utc, epoch_ms,
       (unsigned long)row.uptime_ms, row.baseline ? "baseline" : "change",
       (unsigned long)row.can_id, (unsigned long)row.pgn,
       (unsigned long)row.pgn, row.source, row.len, row.raw_changed_mask,
-      row.trigger_mask, xor_bytes.c_str(), bytes.c_str());
-  // Flush every relevant transition so an engine/ignition power-off does not
-  // leave the final part of the shutdown sequence only in a RAM cache.
-  file.flush();
-  const size_t size_after = file.size();
-  file.close();
-  // A short write means the filesystem is out of usable space. Account for it
-  // instead of looping forever on a file that can no longer grow.
-  if (written == 0 || size_after <= size_before) {
+      row.trigger_mask, row.context ? 1 : 0, row.session,
+      xor_bytes.c_str(), bytes.c_str());
+  const auto write = capture_file_writer::write_verified(
+      SPIFFS, kPersistentCapturePath, FILE_APPEND,
+      reinterpret_cast<const uint8_t*>(line.c_str()), line.length());
+  if (!write.ok()) {
     persistent_dropped_++;
+    persistent_write_errors_++;
+    persistent_write_error_ = true;
+    persistent_error_reason_ =
+        write.status == capture_file_writer::Status::ShortWrite
+            ? "short-write"
+            : write.status == capture_file_writer::Status::VerifyFailed
+                  ? "verify-failed"
+                  : "open-failed";
+    // Do not append after a partial or ambiguous CSV row. The next clear or
+    // rotation must establish a clean file boundary first.
     persistent_full_ = true;
-    Serial.println("Automatic capture paused: flash write returned no bytes");
     return;
   }
-  persistent_bytes_ = size_after;
+  persistent_bytes_ = write.size_after;
   persistent_rows_++;
 }
 
@@ -1361,11 +1374,14 @@ void DiagnosticWeb::rotate_persistent_capture_if_needed() {
   file.close();
 }
 
-void DiagnosticWeb::set_capture(bool enabled, bool clear) {
+bool DiagnosticWeb::set_capture(bool enabled, bool clear) {
+  if (mutex_ == nullptr) return false;
   xSemaphoreTake(mutex_, portMAX_DELAY);
   if (enabled && !capture_enabled_) {
     capture_started_ms_ = millis();
-    capture_session_++;
+    const uint16_t next = uint16_t(recording_session_.fetch_add(1) + 1);
+    capture_session_ = next;
+    baseline_epoch_.fetch_add(1);
     memset(marker_states_, 0, sizeof(marker_states_));
   }
   capture_enabled_ = enabled;
@@ -1374,16 +1390,20 @@ void DiagnosticWeb::set_capture(bool enabled, bool clear) {
     capture_count_ = 0;
     capture_started_ms_ = 0;
     capture_session_ = 0;
+    recording_session_.store(0);
+    baseline_epoch_.fetch_add(1);
     memset(capture_, 0, sizeof(capture_));
     memset(marker_states_, 0, sizeof(marker_states_));
   }
   xSemaphoreGive(mutex_);
+  return true;
 }
 
 void DiagnosticWeb::append_capture_row_locked(const CaptureRow& row) {
   capture_[capture_head_] = row;
   capture_head_ = (capture_head_ + 1) % kCaptureSlots;
   if (capture_count_ < kCaptureSlots) capture_count_++;
+  else capture_overwritten_++;
 }
 
 bool DiagnosticWeb::set_marker(uint8_t marker_id, bool active) {
